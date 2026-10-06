@@ -35,6 +35,9 @@ class _PetScreenState extends State<PetScreen> {
 
   bool _gameOver = false;
   bool _hasWon = false;
+  bool _isPaused = false;
+
+  bool _petPulse = false;
 
   Timer? _hungerTimer;
   Timer? _highMoodTimer;
@@ -74,6 +77,10 @@ class _PetScreenState extends State<PetScreen> {
       return 'Game Over! $_petName needs a restart.';
     }
 
+    if (_isPaused) {
+      return 'Session paused.';
+    }
+
     if (_hunger > 80) {
       return '$_petName is very hungry!';
     }
@@ -85,11 +92,25 @@ class _PetScreenState extends State<PetScreen> {
     return 'Hi, I\'m $_petName!';
   }
 
+  void _animatePet() {
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _petPulse = !_petPulse;
+    });
+  }
+
   void _startHungerTimer() {
     _hungerTimer?.cancel();
 
+    if (_isPaused || _gameOver || _hasWon) {
+      return;
+    }
+
     _hungerTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
-      if (!mounted || _gameOver || _hasWon) {
+      if (!mounted || _isPaused || _gameOver || _hasWon) {
         timer.cancel();
         return;
       }
@@ -103,21 +124,22 @@ class _PetScreenState extends State<PetScreen> {
         }
       });
 
+      _animatePet();
       _updateOutcome();
     });
   }
 
   void _updateOutcome() {
-    if (_gameOver || _hasWon) {
+    if (_gameOver || _hasWon || _isPaused) {
       return;
     }
 
-    // Loss condition
     if (_hunger == 100 && _happiness <= 10) {
       _highMoodTimer?.cancel();
       _highMoodTimer = null;
 
       _hungerTimer?.cancel();
+      _hungerTimer = null;
 
       setState(() {
         _gameOver = true;
@@ -126,18 +148,16 @@ class _PetScreenState extends State<PetScreen> {
       return;
     }
 
-    // Happiness must stay strictly above 80.
     if (_happiness <= 80) {
       _highMoodTimer?.cancel();
       _highMoodTimer = null;
       return;
     }
 
-    // Start the three-minute win timer.
     _highMoodTimer ??= Timer(const Duration(minutes: 3), () {
       _highMoodTimer = null;
 
-      if (!mounted || _gameOver || _happiness <= 80) {
+      if (!mounted || _gameOver || _isPaused || _happiness <= 80) {
         return;
       }
 
@@ -146,10 +166,15 @@ class _PetScreenState extends State<PetScreen> {
       });
 
       _hungerTimer?.cancel();
+      _hungerTimer = null;
     });
   }
 
   void _changePetName() {
+    if (_isPaused || _gameOver || _hasWon) {
+      return;
+    }
+
     final newName = _nameController.text.trim();
 
     if (newName.isEmpty) {
@@ -165,12 +190,11 @@ class _PetScreenState extends State<PetScreen> {
   }
 
   void _feedPet() {
-    if (_gameOver || _hasWon) {
+    if (_isPaused || _gameOver || _hasWon) {
       return;
     }
 
     final nextHunger = _clampMeter(_hunger - 10);
-
     final happinessChange = nextHunger < 30 ? -20 : 10;
 
     final nextHappiness = _clampMeter(_happiness + happinessChange);
@@ -180,11 +204,12 @@ class _PetScreenState extends State<PetScreen> {
       _happiness = nextHappiness;
     });
 
+    _animatePet();
     _updateOutcome();
   }
 
   void _playWithPet() {
-    if (_gameOver || _hasWon) {
+    if (_isPaused || _gameOver || _hasWon) {
       return;
     }
 
@@ -193,6 +218,36 @@ class _PetScreenState extends State<PetScreen> {
       _hunger = _clampMeter(_hunger + 5);
     });
 
+    _animatePet();
+    _updateOutcome();
+  }
+
+  void _pauseSession() {
+    if (_gameOver || _hasWon || _isPaused) {
+      return;
+    }
+
+    _hungerTimer?.cancel();
+    _hungerTimer = null;
+
+    _highMoodTimer?.cancel();
+    _highMoodTimer = null;
+
+    setState(() {
+      _isPaused = true;
+    });
+  }
+
+  void _resumeSession() {
+    if (_gameOver || _hasWon || !_isPaused) {
+      return;
+    }
+
+    setState(() {
+      _isPaused = false;
+    });
+
+    _startHungerTimer();
     _updateOutcome();
   }
 
@@ -201,14 +256,16 @@ class _PetScreenState extends State<PetScreen> {
     _highMoodTimer = null;
 
     _hungerTimer?.cancel();
+    _hungerTimer = null;
 
     setState(() {
       _petName = 'Pip';
       _happiness = 50;
       _hunger = 50;
-
       _gameOver = false;
       _hasWon = false;
+      _isPaused = false;
+      _petPulse = false;
     });
 
     _nameController.clear();
@@ -234,6 +291,15 @@ class _PetScreenState extends State<PetScreen> {
   @override
   Widget build(BuildContext context) {
     final gameFinished = _gameOver || _hasWon;
+    final controlsDisabled = gameFinished || _isPaused;
+
+    // Respect the user's system accessibility preference.
+    final reduceMotion =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+
+    final animationDuration = reduceMotion
+        ? Duration.zero
+        : const Duration(milliseconds: 350);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Digital Pet State Lab')),
@@ -242,19 +308,24 @@ class _PetScreenState extends State<PetScreen> {
           padding: const EdgeInsets.all(24),
           child: Column(
             children: [
-              // PET IMAGE
-              ColorFiltered(
-                colorFilter: ColorFilter.mode(_moodColor, BlendMode.modulate),
-                child: Image.asset(
-                  'assets/pet.png',
-                  height: 180,
-                  fit: BoxFit.contain,
+              // VISUAL EFFECT #1:
+              // Pet gently changes size when its state changes.
+              AnimatedScale(
+                scale: reduceMotion ? 1.0 : (_petPulse ? 1.06 : 1.0),
+                duration: animationDuration,
+                curve: Curves.easeInOut,
+                child: ColorFiltered(
+                  colorFilter: ColorFilter.mode(_moodColor, BlendMode.modulate),
+                  child: Image.asset(
+                    'assets/pet.png',
+                    height: 180,
+                    fit: BoxFit.contain,
+                  ),
                 ),
               ),
 
               const SizedBox(height: 16),
 
-              // PET NAME
               Text(
                 _petName,
                 style: const TextStyle(
@@ -265,7 +336,6 @@ class _PetScreenState extends State<PetScreen> {
 
               const SizedBox(height: 6),
 
-              // MOOD
               Text(
                 'Mood: $_mood',
                 style: TextStyle(
@@ -277,7 +347,6 @@ class _PetScreenState extends State<PetScreen> {
 
               const SizedBox(height: 10),
 
-              // PET MESSAGE
               Text(
                 _statusMessage,
                 textAlign: TextAlign.center,
@@ -286,10 +355,9 @@ class _PetScreenState extends State<PetScreen> {
 
               const SizedBox(height: 24),
 
-              // PET NAME INPUT
               TextField(
                 controller: _nameController,
-                enabled: !gameFinished,
+                enabled: !controlsDisabled,
                 decoration: const InputDecoration(
                   labelText: 'Enter pet name',
                   border: OutlineInputBorder(),
@@ -300,13 +368,12 @@ class _PetScreenState extends State<PetScreen> {
               const SizedBox(height: 10),
 
               ElevatedButton(
-                onPressed: gameFinished ? null : _changePetName,
+                onPressed: controlsDisabled ? null : _changePetName,
                 child: const Text('Confirm Name'),
               ),
 
               const SizedBox(height: 28),
 
-              // HAPPINESS
               Text(
                 'Happiness: $_happiness',
                 style: const TextStyle(fontSize: 18),
@@ -314,31 +381,45 @@ class _PetScreenState extends State<PetScreen> {
 
               const SizedBox(height: 8),
 
-              LinearProgressIndicator(value: _happiness / 100),
+              // VISUAL EFFECT #2:
+              // Smoothly animate the happiness meter.
+              TweenAnimationBuilder<double>(
+                tween: Tween<double>(begin: 0, end: _happiness / 100),
+                duration: animationDuration,
+                builder: (context, value, child) {
+                  return LinearProgressIndicator(value: value);
+                },
+              ),
 
               const SizedBox(height: 24),
 
-              // HUNGER
               Text('Hunger: $_hunger', style: const TextStyle(fontSize: 18)),
 
               const SizedBox(height: 8),
 
-              LinearProgressIndicator(value: _hunger / 100),
+              // VISUAL EFFECT #2:
+              // Smoothly animate the hunger meter.
+              TweenAnimationBuilder<double>(
+                tween: Tween<double>(begin: 0, end: _hunger / 100),
+                duration: animationDuration,
+                builder: (context, value, child) {
+                  return LinearProgressIndicator(value: value);
+                },
+              ),
 
               const SizedBox(height: 32),
 
-              // CARE BUTTONS
               Wrap(
                 alignment: WrapAlignment.center,
                 spacing: 10,
                 runSpacing: 10,
                 children: [
                   ElevatedButton(
-                    onPressed: gameFinished ? null : _feedPet,
+                    onPressed: controlsDisabled ? null : _feedPet,
                     child: const Text('Feed'),
                   ),
                   ElevatedButton(
-                    onPressed: gameFinished ? null : _playWithPet,
+                    onPressed: controlsDisabled ? null : _playWithPet,
                     child: const Text('Play'),
                   ),
                   ElevatedButton(
@@ -348,7 +429,16 @@ class _PetScreenState extends State<PetScreen> {
                 ],
               ),
 
-              // WIN MESSAGE
+              const SizedBox(height: 16),
+
+              ElevatedButton.icon(
+                onPressed: gameFinished
+                    ? null
+                    : (_isPaused ? _resumeSession : _pauseSession),
+                icon: Icon(_isPaused ? Icons.play_arrow : Icons.pause),
+                label: Text(_isPaused ? 'Resume' : 'Pause'),
+              ),
+
               if (_hasWon) ...[
                 const SizedBox(height: 24),
                 const Text(
@@ -357,7 +447,6 @@ class _PetScreenState extends State<PetScreen> {
                 ),
               ],
 
-              // GAME OVER MESSAGE
               if (_gameOver) ...[
                 const SizedBox(height: 24),
                 const Text(
